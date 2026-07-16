@@ -4,6 +4,7 @@ published: false
 description: "Why Bitcoin wants UTXO accumulators, how Utreexo's Merkle forest works, what it costs, and who should run what — for developers."
 tags: bitcoin, cryptography, datastructures
 canonical_url: https://nikicat.github.io/kilobyte-utxo-set/
+cover_image: https://nikicat.github.io/kilobyte-utxo-set/assets/cover.png
 ---
 
 > **Interactive version:** this article has a [live playground edition](https://nikicat.github.io/kilobyte-utxo-set/) where you can add coins, inspect Merkle proofs, and spend them yourself. The GIF below is a recording of it.
