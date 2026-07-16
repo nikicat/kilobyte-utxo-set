@@ -1,6 +1,6 @@
 ---
 title: "The Kilobyte UTXO Set: Utreexo, SwiftSync, and Bitcoin's state problem"
-published: false
+published: true
 description: "Why Bitcoin wants UTXO accumulators, how Utreexo's Merkle forest works, what it costs, and who should run what — for developers."
 tags: bitcoin, cryptography, datastructures
 canonical_url: https://nikicat.github.io/kilobyte-utxo-set/
