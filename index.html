@@ -263,10 +263,10 @@
   <div class="col">
     <p class="kicker">01 · the problem</p>
     <h2>Validation is cheap. State is not.</h2>
-    <p>To validate a transaction, a node must check each input against a record of every coin that exists and hasn't been spent — the <em>UTXO set</em> (unspent transaction outputs). Each check needs three facts: the coin <b>exists</b>, its <b>amount</b>, and its <b>spending condition</b> (script). Then the spent coins are deleted and the new outputs inserted.</p>
+    <p>To validate a transaction, a node must check each input against a record of every coin that exists and hasn't been spent — the <em>UTXO set</em> (unspent transaction outputs). Each check needs a handful of facts: the coin <b>exists</b>, its <b>amount</b>, its <b>spending condition</b> (script), plus its <b>creation height and coinbase flag</b> (for coinbase maturity and BIP&nbsp;68 relative timelocks). Then the spent coins are deleted and the new outputs inserted.</p>
 
     <div class="stats">
-      <div class="stat"><div class="stat-num">~180<small>M</small></div><div class="stat-label">unspent coins tracked by every node</div></div>
+      <div class="stat"><div class="stat-num">~170<small>M</small></div><div class="stat-label">unspent coins tracked by every node</div></div>
       <div class="stat"><div class="stat-num">~12<small>&nbsp;GB</small></div><div class="stat-label">UTXO database on disk (chainstate)</div></div>
       <div class="stat"><div class="stat-num">~3<small>B</small></div><div class="stat-label">random lookups during one full sync</div></div>
       <div class="stat hot"><div class="stat-num">~0.9<small>&nbsp;kB</small></div><div class="stat-label">the same state, as a Utreexo accumulator</div></div>
@@ -278,7 +278,7 @@
       <summary><span class="stitle">How Bitcoin Core actually stores it</span> — LevelDB, dbcache, and the flush spiral</summary>
       <div class="dbody">
         <p>Core keeps the UTXO set in a LevelDB database (<code>chainstate/</code>, ~48 bytes per coin plus index overhead) fronted by an in-memory cache (<code>-dbcache</code>, default 450&nbsp;MiB). While the working set fits in the cache, coin lookups and updates are memory-speed. When the cache fills during sync, Core writes it out and <em>empties it</em> — so the next few million lookups all miss and go to disk.</p>
-        <p>With ~180M coins needing north of 10&nbsp;GB of cache, a default-sized cache overflows constantly. Every miss is a random read; every flush rewrites overlapping LevelDB files (compaction). On a machine with 2–4&nbsp;GB of RAM this — not hashing, not signatures — is where initial sync goes to die. The standard advice "raise your dbcache" is a workaround for exactly the cost accumulators remove.</p>
+        <p>With ~170M coins needing north of 10&nbsp;GB of cache, a default-sized cache overflows constantly. Every miss is a random read; every flush rewrites overlapping LevelDB files (compaction). On a machine with 2–4&nbsp;GB of RAM this — not hashing, not signatures — is where initial sync goes to die. The standard advice "raise your dbcache" is a workaround for exactly the cost accumulators remove.</p>
       </div>
     </details>
 
@@ -329,7 +329,7 @@
     <div class="col" style="padding:0; max-width:44rem; margin:0 auto;">
       <p class="kicker">03 · the mechanism</p>
       <h2>Utreexo: a forest that counts in binary</h2>
-      <p>Utreexo (Dryja, 2019) arranges the UTXO set as a <b>forest of perfect Merkle trees</b> — every leaf is the hash of one coin (its outpoint, amount, and script). The forest's shape is forced by one rule: <em>tree sizes are the binary digits of the coin count</em>. 6 coins = <code>110₂</code> = one 4-tree and one 2-tree. The node stores only the tree <b>roots</b> and the count. That's the entire database.</p>
+      <p>Utreexo (Dryja, 2019) arranges the UTXO set as a <b>forest of perfect Merkle trees</b> — every leaf is the hash of one coin (its outpoint, amount, script, creation height, and coinbase flag). The forest's shape is forced by one rule: <em>tree sizes are the binary digits of the coin count</em>. 6 coins = <code>110₂</code> = one 4-tree and one 2-tree. The node stores only the tree <b>roots</b> and the count. That's the entire database.</p>
       <p>Try it — add coins and watch trees merge like carry bits; click a coin, see its proof, spend it:</p>
     </div>
 
@@ -367,14 +367,15 @@
           <p><b>Verify:</b> the node computes <code>H(c,d)</code> from the claimed coin and its sibling, then <code>H(H(a,b), H(c,d))</code>, and checks the result equals its stored root <code>R</code>. It does — the coin exists, and its amount/script (inside <code>c</code>'s leaf hash) are authentic.</p>
           <p><b>Delete:</b> remove the 4-tree's root from state. Three coins remain, and 3 = <code>11₂</code>, so the forest must become a 2-tree plus a 1-tree. Their roots are <code>H(a,b)</code> and <code>d</code> — <em>both are items from the proof</em>. No lookup, no recomputation from leaves the node doesn't have.</p>
           <p>In general, deleting a leaf makes its sibling "move up" one level, and the proof always contains exactly the hashes needed to rebuild every affected root.</p>
+          <p><em>A footnote for the precise:</em> this tree-splitting is how the 2019 paper presents deletion. The implementations that shipped (utreexod, Floresta's rustreexo) use a newer <em>swapless</em> scheme — the leaf counter never decreases, the deleted slot simply goes empty, and <code>d</code> moves up into its parent's position, so the example would end as the single root <code>H(H(a,b), d)</code> rather than two roots. The property that matters is identical in both designs: the verified proof contains exactly the bytes needed to write the new roots.</p>
         </div>
       </details>
 
       <details>
         <summary><span class="stitle">What the playground simplifies</span> — positions, batching, and real deletes</summary>
         <div class="dbody">
-          <p>Production Utreexo tracks every node's <em>position</em> in the forest and deletes in batches (all of a block's spends at once) using swap operations that keep positions canonical — necessary so that proofs from different peers refer to the same structure, and so multiple deletes in one tree don't trample each other. The playground instead deletes in place and then re-merges equal-sized trees one narrated step at a time, which keeps the binary-counter picture exact but arranges trees by history rather than canonically. The root arithmetic you see — proof hashes becoming new roots — is faithful.</p>
-          <p>Real leaf hashes also commit to the block height and coinbase flag, and the forest is hashed with a domain-tagged SHA-256. See the <a href="https://eprint.iacr.org/2019/611.pdf">paper</a> for the batched transformation.</p>
+          <p>Production Utreexo tracks every node's <em>position</em> in the forest and deletes in batches (all of a block's spends at once) — necessary so that proofs from different peers refer to the same structure, and so multiple deletes in one tree don't trample each other. The 2019 paper keeps the forest canonical with swap operations; the shipped implementations (utreexod, Floresta's rustreexo) instead use a <em>swapless</em> scheme where deleted slots go empty and siblings move up in place. The playground deletes in place and then re-merges equal-sized trees one narrated step at a time, which keeps the binary-counter picture exact but arranges trees by history rather than canonically. The root arithmetic you see — proof hashes becoming new roots — is faithful.</p>
+          <p>Real leaf hashes also commit to the block height and coinbase flag, and the forest is hashed with tagged SHA-512/256. See the <a href="https://eprint.iacr.org/2019/611.pdf">paper</a> for the batched transformation.</p>
         </div>
       </details>
 
@@ -382,7 +383,7 @@
         <summary><span class="stitle">What does the node trust?</span> — nothing but its own hashes</summary>
         <div class="dbody">
           <p>Where do the roots come from? <b>The node computes them itself, from genesis</b> — it starts with an empty forest and applies every add and delete with its own hands as it validates each block. The accumulator state at any height is a pure function of the chain, exactly like today's UTXO set, only smaller. Nobody hands you roots.</p>
-          <p>Given that, proofs are self-authenticating: a proof either hashes up to <em>your own</em> stored roots or it doesn't, and forging one — wrong amount, wrong script, a coin that never existed — requires a SHA-256 collision. Whoever supplies proofs (a peer, a bridge) is exactly as untrusted as a peer supplying blocks today: garbage fails validation and the block is rejected.</p>
+          <p>Given that, proofs are self-authenticating: a proof either hashes up to <em>your own</em> stored roots or it doesn't, and forging one — wrong amount, wrong script, a coin that never existed — requires a SHA-2 collision (implementations hash with SHA-512/256). Whoever supplies proofs (a peer, a bridge) is exactly as untrusted as a peer supplying blocks today: garbage fails validation and the block is rejected.</p>
           <p>Bridges are therefore a <b>liveness</b> dependency, never a safety one — with no proof you can't validate a spend, so you can be starved, but you cannot be fooled. The one optional trust-flavored piece is a hardcoded checkpoint (starting from baked-in roots instead of genesis), and that sits in the same trust class as <code>assumevalid</code>: a reviewable constant in the source, auditable by anyone who syncs without it.</p>
         </div>
       </details>
@@ -406,7 +407,7 @@
 
     <div class="cards">
       <div class="card"><span class="dir win">deleted</span><h4>State &amp; random I/O</h4><p>Node state: 12 GB → ~1 kB. No database, no cache tuning, no flush stalls. Validation speed becomes independent of RAM — a Pi validates like a workstation.</p></div>
-      <div class="card"><span class="dir cost">added</span><h4>Bandwidth</h4><p>Blocks travel with proofs: roughly ×1.7 the bytes (worst case ×4 for unbatched relay). Caching helps a lot — most coins are spent soon after creation, and proofs for cached coins are omitted.</p></div>
+      <div class="card"><span class="dir cost">added</span><h4>Bandwidth</h4><p>Blocks travel with proofs: about ×1.7 the bytes as utreexod ships today (worst case ×4 for per-transaction relay). Caching cuts most of it — most coins are spent soon after creation, proofs for cached coins are omitted, and the paper's simulation with a 500&nbsp;MB leaf cache lands near ×1.25.</p></div>
       <div class="card"><span class="dir cost">added</span><h4>Prover burden</h4><p>Spenders (or bridge nodes on their behalf) must generate and refresh proofs. Bridges store <em>more</em> than a normal node — the asymmetry is the point, but someone must run them.</p></div>
       <div class="card"><span class="dir cost">added</span><h4>CPU, slightly</h4><p>~log n hashes per input is <em>more</em> raw compute than a RAM hash-map hit. On a big-RAM machine Utreexo doesn't win time — it wins footprint. The speedup is real only where state was the bottleneck.</p></div>
     </div>
@@ -414,7 +415,7 @@
     <details>
       <summary><span class="stitle">Why the bandwidth hit is smaller than it looks</span> — coins die young</summary>
       <div class="dbody">
-        <p>Empirically, a large share of outputs are spent within hours or days of creation (change outputs, exchange churn, batching flows). Utreexo exploits this: nodes keep recently added leaves cached, and peers skip sending proofs for anything the receiver is known to cache. Since most spends hit young coins, most proofs shrink to nearly nothing; the ×1.7 figure already includes this effect. The long-tail — old coins waking up — pays full ~28-hash fare.</p>
+        <p>Empirically, a large share of outputs are spent within hours or days of creation (change outputs, exchange churn, batching flows). Utreexo exploits this: nodes keep recently added leaves cached, and peers skip sending proofs for anything the receiver is known to cache. Since most spends hit young coins, most proofs shrink to nearly nothing. The published numbers span exactly this effect: proofs roughly double a block uncached, utreexod ships at about ×1.7, and the paper's simulated 500&nbsp;MB leaf cache brings the whole download down to about ×1.25. The long-tail — old coins waking up — pays full ~28-hash fare.</p>
       </div>
     </details>
 
@@ -432,7 +433,7 @@
   <div class="col">
     <p class="kicker">05 · the inversion</p>
     <h2>SwiftSync: never build the database at all</h2>
-    <p>Utreexo shrinks the UTXO set by making spenders carry proofs. <a href="https://gist.github.com/RubenSomsen/a61a37d14182ccd78760e477c78133cd">SwiftSync</a> (Somsen, 2025) goes further for the special case of syncing: it needs <b>no proofs, no forest, no lookups</b>. You download a <em>hint file</em> — literally one bit per output ever created, saying whether that output will still be unspent when you reach the tip (&lt;100&nbsp;MB compressed for all of Bitcoin's history). Then validation becomes bookkeeping:</p>
+    <p>Utreexo shrinks the UTXO set by making spenders carry proofs. <a href="https://gist.github.com/RubenSomsen/a61a37d14182ccd78760e477c78133cd">SwiftSync</a> (Somsen, 2025) goes further for the special case of syncing: it needs <b>no proofs, no forest, no lookups</b>. You download a <em>hint file</em> — literally one bit per output ever created, saying whether that output will still be unspent when you reach the tip (~100&nbsp;MB compressed for all of Bitcoin's history). Then validation becomes bookkeeping:</p>
 
     <div class="vs">
       <div class="vs-card">
@@ -481,7 +482,7 @@
       </div>
     </div>
 
-    <p>The trade: spent coins are never materialized, so their scripts can't be individually checked — SwiftSync inherits the same <code>assumevalid</code> stance a default node already takes for old signatures. It's a sync-time trick only: when it finishes you're a stock node with a stock database. A proof-of-concept measured a <a href="https://delvingbitcoin.org/t/swiftsync-speeding-up-ibd-with-pre-generated-hints-poc/1562">5.28× sync speedup</a> before parallel validation is even exploited.</p>
+    <p>The trade: spent coins are never materialized, so their scripts can't be individually checked (nor coinbase maturity, which needs the same per-coin metadata) — SwiftSync inherits the same <code>assumevalid</code> stance a default node already takes for old signatures. It's a sync-time trick only: when it finishes you're a stock node with a stock database. A proof-of-concept measured a <a href="https://delvingbitcoin.org/t/swiftsync-speeding-up-ibd-with-pre-generated-hints-poc/1562">5.28× sync speedup</a> before parallel validation is even exploited.</p>
 
     <details>
       <summary><span class="stitle">Why a sum can prove set-consistency</span> — the accountant's argument</summary>
@@ -510,7 +511,7 @@
             <tbody>
               <tr><td>Scope</td><td>node architecture, forever</td><td>initial sync only</td></tr>
               <tr><td>State while running</td><td>~1 kB of roots</td><td>hint bits + one aggregate</td></tr>
-              <tr><td>Network cost</td><td>×1.7 blocks, ongoing</td><td>&lt;100 MB hints, once</td></tr>
+              <tr><td>Network cost</td><td>×1.2–1.7 blocks, ongoing</td><td>~100 MB hints, once</td></tr>
               <tr><td>Parallel validation</td><td>no — forest updates are ordered</td><td>yes — fully commutative</td></tr>
               <tr><td>Trust added</td><td>none</td><td>none for safety; pairs with assumevalid</td></tr>
               <tr><td>Needs ecosystem</td><td>bridges, proof relay, wallet support</td><td>nothing — one hint file</td></tr>
@@ -535,7 +536,7 @@
       <table>
         <thead><tr><th>Approach</th><th>Deletes which cost</th><th>Pays with</th><th>Trust change</th><th>Status</th></tr></thead>
         <tbody>
-          <tr><td>Utreexo</td><td>UTXO state, forever (~1 kB node)</td><td>×1.7 block bandwidth; bridge infra; dynamic proofs</td><td>none</td><td><span class="tag live">utreexod, Floresta</span></td></tr>
+          <tr><td>Utreexo</td><td>UTXO state, forever (~1 kB node)</td><td>×1.2–1.7 block bandwidth; bridge infra; dynamic proofs</td><td>none</td><td><span class="tag live">utreexod, Floresta</span></td></tr>
           <tr><td>SwiftSync <span class="tag">§05</span></td><td>UTXO state <em>during sync</em> + makes blocks verifiable in parallel</td><td>~100 MB hint file (fail-closed if wrong)</td><td>pairs with assumevalid</td><td><span class="tag">PoC, ~5× sync</span></td></tr>
           <tr><td>assumeutxo</td><td>waiting: start at a snapshot, validate history behind</td><td>obtain + verify a 12 GB snapshot; state unchanged</td><td>reviewable snapshot hash in code</td><td><span class="tag live">shipped in Core</span></td></tr>
           <tr><td>UHS <span class="tag">Fields</span></td><td>~half of state: store coin <em>hashes</em> only</td><td>peers attach coin data to relayed txs</td><td>none</td><td><span class="tag">proposal</span></td></tr>
@@ -551,7 +552,7 @@
     <details>
       <summary><span class="stitle">Why not RSA accumulators?</span> — constant-size proofs exist, with a catch</summary>
       <div class="dbody">
-        <p>RSA accumulators (Boneh–Bünz–Fisch, 2019) commit a set into a single group element; membership proofs are constant-size and don't go stale the way Merkle paths do, and thousands of proofs aggregate into one. The catch: you need a modulus nobody can factor — a <em>trusted setup ceremony</em>, anathema to Bitcoin's assumptions. Class groups avoid the ceremony but make every operation orders of magnitude slower. Merkle forests won in practice because they're plain SHA-256: no new assumptions, hardware-accelerated everywhere, auditable by anyone who can read forty lines of code.</p>
+        <p>RSA accumulators (Boneh–Bünz–Fisch, 2019) commit a set into a single group element; membership proofs are constant-size and don't go stale the way Merkle paths do, and thousands of proofs aggregate into one. The catch: you need a modulus nobody can factor — a <em>trusted setup ceremony</em>, anathema to Bitcoin's assumptions. Class groups avoid the ceremony but make every operation orders of magnitude slower. Merkle forests won in practice because they're plain SHA-2 hashing (SHA-512/256 in the shipped code): no new assumptions, fast on any CPU, auditable by anyone who can read forty lines of code.</p>
       </div>
     </details>
   </div>

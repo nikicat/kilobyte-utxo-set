@@ -32,6 +32,6 @@ After the first deploy, fill in the `og:url` / `canonical` placeholders in
 
 ## Figures
 
-Chain constants (~753 GB blocks, ~180 M coins, ~12 GB chainstate) are mid-2026
+Chain constants (~753 GB blocks, ~170 M coins, ~12 GB chainstate) are mid-2026
 mainnet approximations. The playground simplifies Utreexo's position
 bookkeeping (noted inline in the article); the root arithmetic is faithful.
