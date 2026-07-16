@@ -21,21 +21,19 @@ To validate a transaction, a node must check each input against a record of ever
 
 Signatures can be skipped below a reviewable checkpoint (`assumevalid`), bandwidth can be bought, but the UTXO set is different: it's **random-access state touched by every single input**. If it fits in RAM, lookups are ~100 ns; if it doesn't, they become disk seeks and a full sync degrades from hours to days. State is the term that decides whether a Raspberry Pi and a workstation live in the same universe.
 
-<details>
-<summary><b>How Bitcoin Core actually stores it</b> — LevelDB, dbcache, and the flush spiral</summary>
+{% details How Bitcoin Core actually stores it — LevelDB, dbcache, and the flush spiral %}
 
 Core keeps the UTXO set in a LevelDB database (`chainstate/`, ~48 bytes per coin plus index overhead) fronted by an in-memory cache (`-dbcache`, default 450 MiB). While the working set fits in the cache, coin lookups and updates are memory-speed. When the cache fills during sync, Core writes it out and *empties it* — so the next few million lookups all miss and go to disk.
 
 With ~170M coins needing north of 10 GB of cache, a default-sized cache overflows constantly. Every miss is a random read; every flush rewrites overlapping LevelDB files (compaction). On a machine with 2–4 GB of RAM this — not hashing, not signatures — is where initial sync goes to die. The standard advice "raise your dbcache" is a workaround for exactly the cost accumulators remove.
 
-</details>
+{% enddetails %}
 
-<details>
-<summary><b>Why snapshots don't solve this</b> — assumeutxo still ships the state</summary>
+{% details Why snapshots don't solve this — assumeutxo still ships the state %}
 
 `assumeutxo` lets a node start from a UTXO snapshot and validate history in the background — a big usability win. But the snapshot *is* the 12 GB state: you still have to download it, hash it, store it, and random-access it forever after. It moves the state problem around the timeline; it doesn't shrink the state. An accumulator shrinks the thing itself, which is why the two compose nicely: an accumulator checkpoint is a kilobyte you can read in a code review.
 
-</details>
+{% enddetails %}
 
 ## 2 · Flip who carries the data
 
@@ -71,8 +69,7 @@ Three things to notice:
 
 **The proof is also the update.** This is Utreexo's quiet elegance: when a coin is deleted, the new roots of the leftover pieces are *literally the hashes from the proof you just verified*. Verification and the state update consume the same bytes — the node never needs data it doesn't already hold in its hand.
 
-<details>
-<summary><b>The delete, step by step</b> — worked example with 4 coins</summary>
+{% details The delete, step by step — worked example with 4 coins %}
 
 Say the forest holds one 4-tree over coins `a b c d`: root `R = H(H(a,b), H(c,d))`. A transaction spends `c`, attaching the proof `{d, H(a,b)}`.
 
@@ -84,10 +81,9 @@ In general, deleting a leaf makes its sibling "move up" one level, and the proof
 
 *A footnote for the precise:* this tree-splitting is how the 2019 paper presents deletion. The implementations that shipped (utreexod, Floresta's rustreexo) use a newer *swapless* scheme — the leaf counter never decreases, the deleted slot simply goes empty, and `d` moves up into its parent's position, so the example would end as the single root `H(H(a,b), d)` rather than two roots. The property that matters is identical in both designs: the verified proof contains exactly the bytes needed to write the new roots.
 
-</details>
+{% enddetails %}
 
-<details>
-<summary><b>What does the node trust?</b> — nothing but its own hashes</summary>
+{% details What does the node trust? — nothing but its own hashes %}
 
 Where do the roots come from? **The node computes them itself, from genesis** — it starts with an empty forest and applies every add and delete with its own hands as it validates each block. The accumulator state at any height is a pure function of the chain, exactly like today's UTXO set, only smaller. Nobody hands you roots.
 
@@ -95,16 +91,15 @@ Given that, proofs are self-authenticating: a proof either hashes up to *your ow
 
 Bridges are therefore a **liveness** dependency, never a safety one — with no proof you can't validate a spend, so you can be starved, but you cannot be fooled. The one optional trust-flavored piece is a hardcoded checkpoint (starting from baked-in roots instead of genesis), and that sits in the same trust class as `assumevalid`: a reviewable constant in the source, auditable by anyone who syncs without it.
 
-</details>
+{% enddetails %}
 
-<details>
-<summary><b>Where do proofs come from?</b> — bridge nodes and stale proofs</summary>
+{% details Where do proofs come from? — bridge nodes and stale proofs %}
 
 Somebody has to generate proofs for spenders, and today's wallets don't track them. **Bridge nodes** fill the gap: they maintain the *entire* forest (every internal hash — larger than a plain UTXO database) and attach proofs to transactions and blocks on behalf of the legacy ecosystem.
 
 There's a subtler cost: **proofs go stale**. Every block adds and deletes leaves, which restructures the forest, so a proof valid at height *H* may be wrong at *H+1*. Wallets that hold their own proofs must refresh them as blocks arrive (cheap per block, but a standing obligation), or lean on a bridge to prove on demand. This dynamic-proof property is the main engineering difference from textbook Merkle trees, and the main reason adoption needs infrastructure, not just code.
 
-</details>
+{% enddetails %}
 
 ## 4 · What Utreexo trades away
 
@@ -115,21 +110,19 @@ Accumulators don't create efficiency from nothing — they move costs to where t
 - **Added: prover burden.** Spenders (or bridge nodes on their behalf) must generate and refresh proofs. Bridges store *more* than a normal node — the asymmetry is the point, but someone must run them.
 - **Added: CPU, slightly.** ~log n hashes per input is *more* raw compute than a RAM hash-map hit. On a big-RAM machine Utreexo doesn't win time — it wins footprint. The speedup is real only where state was the bottleneck.
 
-<details>
-<summary><b>Why the bandwidth hit is smaller than it looks</b> — coins die young</summary>
+{% details Why the bandwidth hit is smaller than it looks — coins die young %}
 
 Empirically, a large share of outputs are spent within hours or days of creation (change outputs, exchange churn, batching flows). Utreexo exploits this: nodes keep recently added leaves cached, and peers skip sending proofs for anything the receiver is known to cache. Since most spends hit young coins, most proofs shrink to nearly nothing. The published numbers span exactly this effect: proofs roughly double a block uncached, utreexod ships at about ×1.7, and the paper's simulated 500 MB leaf cache brings the whole download down to about ×1.25. The long tail — old coins waking up — pays full ~28-hash fare.
 
-</details>
+{% enddetails %}
 
-<details>
-<summary><b>What it means for initial sync</b> — which bottleneck it removes, in numbers</summary>
+{% details What it means for initial sync — which bottleneck it removes, in numbers %}
 
 A full sync is bounded below by `max(network, disk, cpu)`. On mid-2026 mainnet (~753 GB of blocks, ~3B inputs): a 1 Gbps line needs ~1h40m for the download no matter what; hashing and parsing cost tens of minutes of CPU; signatures below `assumevalid` are skipped. On big-RAM hardware the UTXO term is small — so Utreexo barely moves the bound there, and the extra proof bytes actually *raise* the network term.
 
 The transformation is on *constrained* hardware: with 2 GB of RAM, a stock node's UTXO term explodes into billions of disk seeks (days), while a Utreexo node's stays exactly where the big-RAM one is. Accumulators don't lower the floor — they make the floor reachable on hardware that used to sit 10× above it.
 
-</details>
+{% enddetails %}
 
 ## 5 · SwiftSync: never build the database at all
 
@@ -155,8 +148,7 @@ SwiftSync:  b₃, b₁, b₄, b₂  →  Σ     any order, every core at once
 
 This attacks the *serial* bottleneck of sync — the one cost no amount of bandwidth or disk can buy back. The trade: spent coins are never materialized, so their scripts can't be individually checked (nor coinbase maturity, which needs the same per-coin metadata) — SwiftSync inherits the same `assumevalid` stance a default node already takes for old signatures. It's a sync-time trick only: when it finishes you're a stock node with a stock database. A proof-of-concept measured a [5.28× sync speedup](https://delvingbitcoin.org/t/swiftsync-speeding-up-ibd-with-pre-generated-hints-poc/1562) before parallel validation is even exploited.
 
-<details>
-<summary><b>Why a sum can prove set-consistency</b> — the accountant's argument</summary>
+{% details Why a sum can prove set-consistency — the accountant's argument %}
 
 Think of the aggregate as a ledger that must balance. Every hint-0 output deposits `H(outpoint)` exactly once when it's created; every input withdraws `H(outpoint)` exactly once when it spends. If history is honest, deposits and withdrawals pair off perfectly and the balance is zero.
 
@@ -164,10 +156,9 @@ Now try to cheat. Spend a coin that never existed: a withdrawal with no matching
 
 Hints are also **deterministic** given the chain and target height — anyone can regenerate the file and compare, so a published hint file is reproducible, not bespoke. Fuller designs fold amounts into the aggregated data to tighten the money-supply check; the [gist](https://gist.github.com/RubenSomsen/a61a37d14182ccd78760e477c78133cd) walks the exact accounting.
 
-</details>
+{% enddetails %}
 
-<details>
-<summary><b>SwiftSync vs Utreexo, head to head</b> — they solve different problems</summary>
+{% details SwiftSync vs Utreexo, head to head — they solve different problems %}
 
 | | Utreexo | SwiftSync |
 |---|---|---|
@@ -181,7 +172,7 @@ Hints are also **deterministic** given the chain and target height — anyone ca
 
 They compose, too: a Utreexo node can use SwiftSync-style hints to skip proof verification for coins that die during sync — the ideas attack orthogonal costs (state vs. seriality).
 
-</details>
+{% enddetails %}
 
 ## 6 · Utreexo isn't the only answer
 
@@ -196,12 +187,11 @@ They compose, too: a Utreexo node can use SwiftSync-style hints to skip proof ve
 | RSA / class-group accumulators | proof staleness & log-size proofs (constant-size instead) | trusted setup (RSA) or slow group math | setup ceremony (RSA) | research |
 | ZeroSync | sync itself: verify a succinct proof of the whole chain | enormous proving cost; young cryptography | soundness of the proof system | research |
 
-<details>
-<summary><b>Why not RSA accumulators?</b> — constant-size proofs exist, with a catch</summary>
+{% details Why not RSA accumulators? — constant-size proofs exist, with a catch %}
 
 RSA accumulators (Boneh–Bünz–Fisch, 2019) commit a set into a single group element; membership proofs are constant-size and don't go stale the way Merkle paths do, and thousands of proofs aggregate into one. The catch: you need a modulus nobody can factor — a *trusted setup ceremony*, anathema to Bitcoin's assumptions. Class groups avoid the ceremony but make every operation orders of magnitude slower. Merkle forests won in practice because they're plain SHA-2 hashing (SHA-512/256 in the shipped code): no new assumptions, fast on any CPU, auditable by anyone who can read forty lines of code.
 
-</details>
+{% enddetails %}
 
 ## 7 · Applicability: pick by deployment, not by elegance
 
@@ -216,8 +206,7 @@ None of these designs dominates — they spend different budgets (RAM, bandwidth
 | Miner / pool | validation latency is money | stock node, everything in RAM | proof bytes in the hot path are pure cost |
 | Ephemeral nodes — CI, fleet spin-up | every fresh instance pays a full IBD | **SwiftSync** (+ assumeutxo today) | reproducible hints turn provisioning into a parallel batch job |
 
-<details>
-<summary><b>What a phone full node actually looks like</b> — the Utreexo endgame</summary>
+{% details What a phone full node actually looks like — the Utreexo endgame %}
 
 The pieces: an embeddable compact-state node (Floresta ships as a library with bindings for exactly this), a **hardcoded accumulator checkpoint** — a kilobyte of roots, reviewable in the source like `assumevalid` — and forward-only validation from that checkpoint. Wallet discovery uses compact block filters (BIP 158) checked locally, so no server ever learns your addresses.
 
@@ -225,10 +214,9 @@ The honest costs: proof-carrying blocks are ~×1.7 bytes on a possibly metered c
 
 To be precise about what this improves on: today's light wallets are *not* "no validation." An SPV client verifies the header chain (proof-of-work, difficulty) and Merkle inclusion of its transactions, so a server cannot forge a payment to it — and Neutrino (BIP 157/158) already fixed the privacy leak that Electrum-style and bloom-filter wallets have. What no light client can do is check **rule-validity**: scripts, signatures, inflation, double-spends elsewhere. It follows the most-work chain unconditionally, trusting the hashrate majority to enforce the rules, and it can be lied to by omission. That specific gap — enforcing consensus rules yourself — is the one a checkpointed Utreexo node closes; privacy it merely matches.
 
-</details>
+{% enddetails %}
 
-<details>
-<summary><b>Why the heavyweights keep fat nodes</b> — and why that's the design working</summary>
+{% details Why the heavyweights keep fat nodes — and why that's the design working %}
 
 **Miners** race the network: every millisecond spent validating a fresh block delays mining on top of it, which costs real revenue in stale and empty blocks. They keep the whole UTXO set pinned in RAM and want the block-relay hot path as thin as possible.
 
@@ -236,7 +224,7 @@ To be precise about what this improves on: today's light wallets are *not* "no v
 
 This split isn't a failure of adoption — it's the intended shape: *few fat provers, many thin verifiers*. The asymmetry between a data-center bridge and a phone verifying against 28 hashes is precisely what the accumulator was designed to create.
 
-</details>
+{% enddetails %}
 
 ## 8 · Further reading
 
